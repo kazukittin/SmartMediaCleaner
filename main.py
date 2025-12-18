@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, 
     QHBoxLayout, QPushButton, QLabel, QFileDialog, 
     QProgressBar, QTextEdit, QDoubleSpinBox, QGroupBox,
-    QStackedWidget
+    QStackedWidget, QCheckBox
 )
 from PySide6.QtCore import QThread, Slot, Qt
 from scanner import ScanWorker

@@ -88,6 +88,24 @@ class ResultsView(QWidget):
         container = QWidget()
         layout = QVBoxLayout(container)
         
+        # ソート切替コントロール
+        sort_layout = QHBoxLayout()
+        sort_layout.addWidget(QLabel("🔄 並び順:"))
+        
+        self.blur_sort_asc_btn = QPushButton("ブレ小→大 ▲")
+        self.blur_sort_asc_btn.setCheckable(True)
+        self.blur_sort_asc_btn.setChecked(True)
+        self.blur_sort_asc_btn.clicked.connect(lambda: self._set_blur_sort(ascending=True))
+        sort_layout.addWidget(self.blur_sort_asc_btn)
+        
+        self.blur_sort_desc_btn = QPushButton("ブレ大→小 ▼")
+        self.blur_sort_desc_btn.setCheckable(True)
+        self.blur_sort_desc_btn.clicked.connect(lambda: self._set_blur_sort(ascending=False))
+        sort_layout.addWidget(self.blur_sort_desc_btn)
+        
+        sort_layout.addStretch()
+        layout.addLayout(sort_layout)
+        
         # QListWidget (仮想スクロール対応)
         self.blur_list = QListWidget()
         self.blur_list.setViewMode(QListWidget.IconMode)
@@ -266,11 +284,16 @@ class ResultsView(QWidget):
         for group_hash, group_items in dup_videos.items():
             for item in group_items:
                 # Phase 3形式かPhase 1形式か判定
-                if isinstance(item, tuple):
-                    path, duration = item
-                else:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    path, duration = item[0], item[1]
+                elif isinstance(item, (list, tuple)) and len(item) == 1:
+                    path = item[0]
+                    duration = None
+                elif isinstance(item, str):
                     path = item
                     duration = None
+                else:
+                    continue
                 
                 self.video_table.insertRow(row)
                 
@@ -404,9 +427,63 @@ class ResultsView(QWidget):
         return sorted_items[0][0]  # ベストショットのパスを返す
     
     def _start_thumbnail_loading(self, paths: list):
-        """サムネイルの非同期読み込みを開始"""
-        self.loader_thread = QThread()
-        self.loader = ThumbnailLoader(paths)
+        """
+        サムネイルの非同期読み込みを開始
+        Phase 5: 表示範囲のみ読み込み (遅延描画)
+        """
+        # 既存ローダー停止
+        self._stop_loader()
+        
+        # 全パスを保存
+        self.pending_thumbnail_paths = list(paths)
+        self.loaded_thumbnails = set()
+        
+        # 最初のバッチを読み込み (可視範囲 + 余裕)
+        initial_batch = paths[:50] if len(paths) > 50 else paths
+        self._load_thumbnail_batch(initial_batch)
+        
+        # スクロールイベントで追加読み込み
+        self.blur_list.verticalScrollBar().valueChanged.connect(self._on_blur_scroll)
+    
+    def _on_blur_scroll(self):
+        """スクロール時に可視範囲のサムネイルを読み込み"""
+        if not hasattr(self, 'pending_thumbnail_paths'):
+            return
+        
+        # 可視範囲のアイテムを取得
+        visible_rect = self.blur_list.viewport().rect()
+        to_load = []
+        
+        for i in range(self.blur_list.count()):
+            item = self.blur_list.item(i)
+            item_rect = self.blur_list.visualItemRect(item)
+            
+            if visible_rect.intersects(item_rect):
+                path = item.data(Qt.UserRole)
+                if path and path not in self.loaded_thumbnails:
+                    to_load.append(path)
+        
+        # バッチ読み込み
+        if to_load:
+            self._load_thumbnail_batch(to_load[:20])  # 最大20件ずつ
+    
+    def _load_thumbnail_batch(self, paths: list):
+        """サムネイルをバッチで読み込み"""
+        if not paths:
+            return
+        
+        # 読み込み済みを除外
+        paths_to_load = [p for p in paths if p not in self.loaded_thumbnails]
+        if not paths_to_load:
+            return
+        
+        # 読み込み済みとしてマーク
+        for p in paths_to_load:
+            self.loaded_thumbnails.add(p)
+        
+        # ローダーを開始
+        self.loader_thread = QThread(self)  # 親をセットしてクラッシュ防止
+        self.loader = ThumbnailLoader(paths_to_load)
         self.loader.moveToThread(self.loader_thread)
         
         # シグナル接続
@@ -416,7 +493,6 @@ class ResultsView(QWidget):
         # スレッド終了処理
         self.loader.finished.connect(self.loader_thread.quit)
         self.loader.finished.connect(self.loader.deleteLater)
-        self.loader_thread.finished.connect(self.loader_thread.deleteLater)
         self.loader_thread.finished.connect(self._on_loader_finished)
         
         self.loader_thread.start()
@@ -432,7 +508,9 @@ class ResultsView(QWidget):
             self.loader.stop()
         if self.loader_thread and self.loader_thread.isRunning():
             self.loader_thread.quit()
-            self.loader_thread.wait()
+            self.loader_thread.wait(3000)  # 最大3秒待機
+            if self.loader_thread and self.loader_thread.isRunning():
+                self.loader_thread.terminate()  # 強制終了
     
     @Slot(str, QPixmap)
     def _on_thumbnail_loaded(self, path: str, pixmap: QPixmap):
@@ -444,7 +522,7 @@ class ResultsView(QWidget):
         # QListWidget (ブレ画像タブ用)
         for i in range(self.blur_list.count()):
             item = self.blur_list.item(i)
-            if item.data(Qt.UserRole) == path:
+            if item and item.data(Qt.UserRole) == path:
                 # アイコンとして設定
                 item.setIcon(QIcon(pixmap))
                 break
@@ -493,6 +571,38 @@ class ResultsView(QWidget):
             elif row > 0:
                 prev_path = self.blur_list.item(row - 1).data(Qt.UserRole)
                 self._open_compare_mode(prev_path, path)
+    
+    def _set_blur_sort(self, ascending: bool):
+        """ブレ画像のソート順を切り替え"""
+        self.blur_sort_asc_btn.setChecked(ascending)
+        self.blur_sort_desc_btn.setChecked(not ascending)
+        
+        if not hasattr(self, 'blur_items_data') or not self.blur_items_data:
+            return
+        
+        # ソートを実行
+        items_with_score = [
+            (path, data.get("blur_score", 0), data.get("face_count", 0))
+            for path, data in self.blur_items_data.items()
+        ]
+        items_with_score.sort(key=lambda x: x[1], reverse=not ascending)
+        
+        # リストを再構築
+        self.blur_list.clear()
+        for path, blur_score, face_count in items_with_score:
+            item = QListWidgetItem()
+            basename = os.path.basename(path)
+            label = f"{basename}\nブレ:{int(blur_score)}"
+            if face_count > 0:
+                label += f" 👤{face_count}"
+            item.setText(label)
+            item.setData(Qt.UserRole, path)
+            item.setSizeHint(QSize(THUMBNAIL_SIZE + 20, THUMBNAIL_SIZE + 50))
+            self.blur_list.addItem(item)
+        
+        # サムネイル再読み込み
+        paths = [path for path, _, _ in items_with_score]
+        self._start_thumbnail_loading(paths)
     
     def _on_thumbnail_clicked(self, path: str):
         """サムネイルクリック時 - 比較モードを開く"""
