@@ -46,6 +46,14 @@ class ScanPage(QWidget):
         self.blur_threshold_spin.setToolTip("この値より低いスコアの画像をブレと判定")
         settings_layout.addWidget(self.blur_threshold_spin)
         
+        settings_layout.addSpacing(30)
+        
+        # Phase 5: サブフォルダトグル
+        self.subfolder_checkbox = QCheckBox("サブフォルダを含める")
+        self.subfolder_checkbox.setChecked(True)
+        self.subfolder_checkbox.setToolTip("サブフォルダ内のファイルも再帰的にスキャン")
+        settings_layout.addWidget(self.subfolder_checkbox)
+        
         settings_layout.addStretch()
         settings_group.setLayout(settings_layout)
         self.layout.addWidget(settings_group)
@@ -96,7 +104,11 @@ class ScanPage(QWidget):
 
         # Workerスレッドのセットアップ
         self.thread = QThread()
-        self.worker = ScanWorker(self.target_folder, self.blur_threshold_spin.value())
+        self.worker = ScanWorker(
+            self.target_folder, 
+            self.blur_threshold_spin.value(),
+            recursive=self.subfolder_checkbox.isChecked()
+        )
         self.worker.moveToThread(self.thread)
 
         # シグナル接続

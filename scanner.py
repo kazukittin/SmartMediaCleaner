@@ -22,15 +22,17 @@ FACE_CASCADE_PATH = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml
 class ScanWorker(QObject):
     """
     スキャン処理をバックグラウンドで実行するワーカークラス。
+    Phase 5: 大規模対応（4万ファイル対応）
     """
     progress = Signal(int, int, str)  # current, total, filename
     finished = Signal(dict)           # results
     log = Signal(str)                 # log messages
 
-    def __init__(self, folder_path: str, blur_threshold: float = 100.0):
+    def __init__(self, folder_path: str, blur_threshold: float = 100.0, recursive: bool = True):
         super().__init__()
         self.folder_path = folder_path
         self.blur_threshold = blur_threshold
+        self.recursive = recursive
         self.db = DBManager()
         self._is_running = True
         
@@ -46,14 +48,25 @@ class ScanWorker(QObject):
         
         # 1. ファイルリストの収集
         files_to_scan = []
-        for root, dirs, files in os.walk(self.folder_path):
-            # 除外ディレクトリのフィルタリング
-            dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
-            
-            for file in files:
-                ext = os.path.splitext(file)[1].lower()
-                if ext in IMAGE_EXTENSIONS or ext in VIDEO_EXTENSIONS:
-                    files_to_scan.append(os.path.join(root, file))
+        
+        if self.recursive:
+            # サブフォルダを含めて再帰スキャン
+            for root, dirs, files in os.walk(self.folder_path):
+                # 除外ディレクトリのフィルタリング
+                dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS]
+                
+                for file in files:
+                    ext = os.path.splitext(file)[1].lower()
+                    if ext in IMAGE_EXTENSIONS or ext in VIDEO_EXTENSIONS:
+                        files_to_scan.append(os.path.join(root, file))
+        else:
+            # 直下のみスキャン
+            for file in os.listdir(self.folder_path):
+                filepath = os.path.join(self.folder_path, file)
+                if os.path.isfile(filepath):
+                    ext = os.path.splitext(file)[1].lower()
+                    if ext in IMAGE_EXTENSIONS or ext in VIDEO_EXTENSIONS:
+                        files_to_scan.append(filepath)
 
         total_files = len(files_to_scan)
         self.log.emit(f"対象ファイル数: {total_files}")

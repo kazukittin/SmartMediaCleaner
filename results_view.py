@@ -9,10 +9,10 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QScrollArea,
     QPushButton, QLabel, QTableWidget, QTableWidgetItem, QCheckBox,
     QHeaderView, QMessageBox, QFrame, QStackedWidget, QSizePolicy,
-    QAbstractItemView, QSlider
+    QAbstractItemView, QSlider, QListView, QListWidget, QListWidgetItem
 )
-from PySide6.QtCore import Qt, Signal, Slot, QThread
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt, Signal, Slot, QThread, QSize
+from PySide6.QtGui import QPixmap, QIcon
 
 from ui_components import (
     ThumbnailWidget, SyncImageWidget, ThumbnailLoader, FlowLayout, THUMBNAIL_SIZE
@@ -81,21 +81,28 @@ class ResultsView(QWidget):
         layout.addWidget(self.action_bar)
     
     def _create_blur_tab(self) -> QWidget:
-        """ブレ画像タブ (グリッド表示)"""
+        """
+        ブレ画像タブ (仮想スクロール対応)
+        Phase 5: QListWidget で大規模対応
+        """
         container = QWidget()
         layout = QVBoxLayout(container)
         
-        # スクロールエリア
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # QListWidget (仮想スクロール対応)
+        self.blur_list = QListWidget()
+        self.blur_list.setViewMode(QListWidget.IconMode)
+        self.blur_list.setIconSize(QSize(THUMBNAIL_SIZE, THUMBNAIL_SIZE))
+        self.blur_list.setSpacing(10)
+        self.blur_list.setResizeMode(QListWidget.Adjust)
+        self.blur_list.setSelectionMode(QListWidget.MultiSelection)
+        self.blur_list.setUniformItemSizes(True)  # パフォーマンス向上
+        self.blur_list.setMovement(QListWidget.Static)
+        self.blur_list.setFlow(QListWidget.LeftToRight)
+        self.blur_list.setWrapping(True)
+        self.blur_list.itemSelectionChanged.connect(self._on_blur_list_selection_changed)
+        self.blur_list.itemDoubleClicked.connect(self._on_blur_item_double_clicked)
         
-        self.blur_content = QWidget()
-        self.blur_layout = FlowLayout(items_per_row=8)
-        self.blur_content.setLayout(self.blur_layout)
-        scroll.setWidget(self.blur_content)
-        
-        layout.addWidget(scroll)
+        layout.addWidget(self.blur_list)
         return container
     
     def _create_similar_tab(self) -> QWidget:
@@ -187,7 +194,7 @@ class ResultsView(QWidget):
         self._stop_loader()
         
         # 各タブをクリア
-        self._clear_layout(self.blur_layout)
+        self.blur_list.clear()
         self._clear_layout(self.similar_layout)
         self.video_table.setRowCount(0)
         
@@ -197,7 +204,7 @@ class ResultsView(QWidget):
         # メタデータ取得用
         image_metadata = results.get("image_metadata", {})
         
-        # ブレ画像タブ (Phase 3形式: [(path, blur_score, face_count), ...])
+        # ブレ画像タブ (Phase 5: QListWidget で仮想スクロール対応)
         blur_images = results.get("blur_images", [])
         
         # データを正規化してソート用リストを作成
@@ -222,14 +229,23 @@ class ResultsView(QWidget):
         # ブレスコア昇順でソート (スコアが低い=ブレが酷い を先頭に)
         normalized_blur.sort(key=lambda x: x[1])
         
+        # ブレ画像データを保存 (選択時の参照用)
+        self.blur_items_data = {}
+        
         for path, blur_score, face_count in normalized_blur:
-            widget = ThumbnailWidget(path, blur_score=blur_score, face_count=face_count)
-            widget.checked_changed.connect(self._on_check_changed)
-            widget.clicked.connect(self._on_thumbnail_clicked)
-            self.blur_layout.add_widget(widget)
-            self.thumbnail_widgets[path] = widget
+            # QListWidgetItem を作成
+            item = QListWidgetItem()
+            basename = os.path.basename(path)
+            label = f"{basename}\nブレ:{int(blur_score)}"
+            if face_count > 0:
+                label += f" 👤{face_count}"
+            item.setText(label)
+            item.setData(Qt.UserRole, path)  # パスをデータとして保存
+            item.setSizeHint(QSize(THUMBNAIL_SIZE + 20, THUMBNAIL_SIZE + 50))
+            
+            self.blur_list.addItem(item)
+            self.blur_items_data[path] = {"blur_score": blur_score, "face_count": face_count}
             all_image_paths.append(path)
-        self.blur_layout.finalize()
         
         # 類似画像タブ (Phase 3形式: phash -> [(path, blur_score, face_count, size), ...])
         similar_groups = results.get("similar_groups", {})
@@ -421,8 +437,17 @@ class ResultsView(QWidget):
     @Slot(str, QPixmap)
     def _on_thumbnail_loaded(self, path: str, pixmap: QPixmap):
         """サムネイル読み込み完了時"""
+        # ThumbnailWidget (類似画像タブ用)
         if path in self.thumbnail_widgets:
             self.thumbnail_widgets[path].set_pixmap(pixmap)
+        
+        # QListWidget (ブレ画像タブ用)
+        for i in range(self.blur_list.count()):
+            item = self.blur_list.item(i)
+            if item.data(Qt.UserRole) == path:
+                # アイコンとして設定
+                item.setIcon(QIcon(pixmap))
+                break
     
     def _on_check_changed(self, path: str, checked: bool):
         """チェックボックス変更時"""
@@ -439,6 +464,35 @@ class ResultsView(QWidget):
         else:
             self.selected_files.discard(path)
         self._update_status()
+    
+    def _on_blur_list_selection_changed(self):
+        """ブレ画像リストの選択変更時"""
+        # 選択されたアイテムのパスを取得
+        for item in self.blur_list.selectedItems():
+            path = item.data(Qt.UserRole)
+            if path:
+                self.selected_files.add(path)
+        
+        # 選択解除されたアイテムを削除
+        selected_paths = {item.data(Qt.UserRole) for item in self.blur_list.selectedItems()}
+        blur_paths = {self.blur_list.item(i).data(Qt.UserRole) for i in range(self.blur_list.count())}
+        for path in blur_paths - selected_paths:
+            self.selected_files.discard(path)
+        
+        self._update_status()
+    
+    def _on_blur_item_double_clicked(self, item):
+        """ブレ画像リストのダブルクリック時"""
+        path = item.data(Qt.UserRole)
+        if path:
+            # 隣の画像と比較モードへ
+            row = self.blur_list.row(item)
+            if row + 1 < self.blur_list.count():
+                next_path = self.blur_list.item(row + 1).data(Qt.UserRole)
+                self._open_compare_mode(path, next_path)
+            elif row > 0:
+                prev_path = self.blur_list.item(row - 1).data(Qt.UserRole)
+                self._open_compare_mode(prev_path, path)
     
     def _on_thumbnail_clicked(self, path: str):
         """サムネイルクリック時 - 比較モードを開く"""
