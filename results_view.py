@@ -627,7 +627,16 @@ class ResultsView(QWidget):
     
     def _open_compare_mode(self, left_path: str, right_path: str):
         """比較モードを開く"""
-        self.compare_widget.set_images(left_path, right_path)
+        # メタデータからブレスコアを取得
+        image_metadata = self.scan_results.get("image_metadata", {})
+        
+        left_meta = image_metadata.get(left_path, {})
+        right_meta = image_metadata.get(right_path, {})
+        
+        left_blur = left_meta.get("blur_score")
+        right_blur = right_meta.get("blur_score")
+        
+        self.compare_widget.set_images(left_path, right_path, left_blur, right_blur)
         self.content_stack.setCurrentWidget(self.compare_widget)
     
     def _close_compare_mode(self):

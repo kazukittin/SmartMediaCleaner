@@ -237,7 +237,12 @@ class SyncImageWidget(QWidget):
         super().__init__(parent)
         self.left_path = ""
         self.right_path = ""
+        self.left_blur = None
+        self.right_blur = None
         self.display_mode = "normal"  # normal, histogram, peaking
+        
+        # キーボードフォーカスを有効化
+        self.setFocusPolicy(Qt.StrongFocus)
         
         layout = QVBoxLayout(self)
         
@@ -326,12 +331,30 @@ class SyncImageWidget(QWidget):
         self.mode_peak_btn.setChecked(mode == "peaking")
         self._refresh_images()
     
-    def set_images(self, left_path: str, right_path: str):
+    def set_images(self, left_path: str, right_path: str, left_blur: float = None, right_blur: float = None):
         """比較する2枚の画像をセット"""
         self.left_path = left_path
         self.right_path = right_path
+        self.left_blur = left_blur
+        self.right_blur = right_blur
         self._refresh_images()
         self._update_labels()
+        
+        # ショートカットキー有効化のためにフォーカスを取得
+        self.setFocus()
+    
+    def keyPressEvent(self, event: QKeyEvent):
+        """キーボードショートカット: Q=左画像を開く, E=右画像を開く"""
+        if event.key() == Qt.Key_Q:
+            # 左画像を外部ビューアで開く
+            if self.left_path and os.path.exists(self.left_path):
+                os.startfile(self.left_path)
+        elif event.key() == Qt.Key_E:
+            # 右画像を外部ビューアで開く
+            if self.right_path and os.path.exists(self.right_path):
+                os.startfile(self.right_path)
+        else:
+            super().keyPressEvent(event)
     
     def _refresh_images(self):
         """現在のモードで画像を更新"""
@@ -430,10 +453,14 @@ class SyncImageWidget(QWidget):
     
     def _update_labels(self):
         """ファイル情報 + EXIF をラベルに表示"""
-        for path, label in [(self.left_path, self.left_label), 
-                            (self.right_path, self.right_label)]:
+        for path, label, blur_score in [(self.left_path, self.left_label, self.left_blur), 
+                                        (self.right_path, self.right_label, self.right_blur)]:
             if path and os.path.exists(path):
                 info_lines = [os.path.basename(path)]
+                
+                # ブレスコア表示
+                if blur_score is not None:
+                    info_lines.append(f"🔍 ブレ: {int(blur_score)}")
                 
                 # サイズ
                 size = os.path.getsize(path)
