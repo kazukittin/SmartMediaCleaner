@@ -58,6 +58,10 @@ class ResultsView(QWidget):
         self.tabs.addTab(self.similar_tab, "類似画像")
         self.tabs.addTab(self.video_tab, "重複動画")
         
+        # 破損メディアタブ
+        self.corrupted_tab = self._create_corrupted_tab()
+        self.tabs.addTab(self.corrupted_tab, "破損メディア")
+        
         # ログタブ
         self.log_tab = self._create_log_tab()
         self.tabs.addTab(self.log_tab, "ログ")
@@ -150,6 +154,26 @@ class ResultsView(QWidget):
         layout.addWidget(self.video_table)
         return container
     
+    def _create_corrupted_tab(self) -> QWidget:
+        """破損メディアタブ (テーブル表示)"""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        
+        # 説明ラベル
+        info_label = QLabel("⚠️ 以下のファイルは破損しているか、読み込めない形式です。")
+        info_label.setStyleSheet("color: #e67e22; padding: 8px;")
+        layout.addWidget(info_label)
+        
+        self.corrupted_table = QTableWidget()
+        self.corrupted_table.setColumnCount(4)
+        self.corrupted_table.setHorizontalHeaderLabels(["選択", "ファイル名", "エラー内容", "パス"])
+        self.corrupted_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.corrupted_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.corrupted_table.setAlternatingRowColors(True)
+        
+        layout.addWidget(self.corrupted_table)
+        return container
+    
     def _create_log_tab(self) -> QWidget:
         """ログタブ"""
         container = QWidget()
@@ -210,6 +234,7 @@ class ResultsView(QWidget):
         self.blur_list.clear()
         self._clear_layout(self.similar_layout)
         self.video_table.setRowCount(0)
+        self.corrupted_table.setRowCount(0)
         
         # 画像パスを収集
         all_image_paths = []
@@ -315,11 +340,36 @@ class ResultsView(QWidget):
                 
                 row += 1
         
+        # 破損メディアタブ
+        corrupted_files = results.get("corrupted_files", [])
+        for row, item in enumerate(corrupted_files):
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                path, error_msg = item[0], item[1]
+            else:
+                continue
+            
+            self.corrupted_table.insertRow(row)
+            
+            # チェックボックス
+            checkbox = QCheckBox()
+            checkbox.stateChanged.connect(
+                lambda state, p=path, cb=checkbox: self._on_corrupted_check_changed(p, cb.isChecked())
+            )
+            self.corrupted_table.setCellWidget(row, 0, checkbox)
+            
+            # ファイル情報
+            filename = os.path.basename(path)
+            self.corrupted_table.setItem(row, 1, QTableWidgetItem(filename))
+            self.corrupted_table.setItem(row, 2, QTableWidgetItem(error_msg))
+            self.corrupted_table.setItem(row, 3, QTableWidgetItem(path))
+        
         # タブタイトル更新
         blur_count = len(blur_images)
+        corrupted_count = len(corrupted_files)
         self.tabs.setTabText(0, f"ブレ画像 ({blur_count})")
         self.tabs.setTabText(1, f"類似画像 ({len(similar_groups)}グループ)")
         self.tabs.setTabText(2, f"重複動画 ({len(dup_videos)}グループ)")
+        self.tabs.setTabText(3, f"破損メディア ({corrupted_count})")
         
         # 非同期サムネイル読み込み開始
         if all_image_paths:
@@ -532,6 +582,14 @@ class ResultsView(QWidget):
     
     def _on_video_check_changed(self, path: str, checked: bool):
         """動画テーブルのチェックボックス変更時"""
+        if checked:
+            self.selected_files.add(path)
+        else:
+            self.selected_files.discard(path)
+        self._update_status()
+    
+    def _on_corrupted_check_changed(self, path: str, checked: bool):
+        """破損メディアテーブルのチェックボックス変更時"""
         if checked:
             self.selected_files.add(path)
         else:

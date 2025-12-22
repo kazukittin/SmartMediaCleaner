@@ -71,7 +71,8 @@ class ScanWorker(QObject):
             "blur_images": [],
             "similar_groups": {},
             "duplicate_videos": {},
-            "image_metadata": {}
+            "image_metadata": {},
+            "corrupted_files": []  # 破損ファイルリスト: [(path, error_message), ...]
         }
 
         phash_map: Dict[str, List[Tuple[str, float, int, int]]] = {}
@@ -108,10 +109,22 @@ class ScanWorker(QObject):
                     video_frame_hash = None
                     
                     if file_path.lower().endswith(tuple(IMAGE_EXTENSIONS)):
+                        # 画像の破損チェック
+                        is_corrupted, error_msg = self._check_image_corrupted(file_path)
+                        if is_corrupted:
+                            results["corrupted_files"].append((file_path, error_msg))
+                            self.log.emit(f"破損ファイル検出: {os.path.basename(file_path)} - {error_msg}")
+                            continue
                         blur_score = self._calculate_blur_score(file_path)
                         phash = self._calculate_phash(file_path)
                         face_count = self._detect_faces(file_path)
                     elif file_path.lower().endswith(tuple(VIDEO_EXTENSIONS)):
+                        # 動画の破損チェック
+                        is_corrupted, error_msg = self._check_video_corrupted(file_path)
+                        if is_corrupted:
+                            results["corrupted_files"].append((file_path, error_msg))
+                            self.log.emit(f"破損ファイル検出: {os.path.basename(file_path)} - {error_msg}")
+                            continue
                         video_hash = self._calculate_video_hash(file_path, size)
                         video_duration, video_frame_hash = self._analyze_video_content(file_path)
 
@@ -230,6 +243,64 @@ class ScanWorker(QObject):
             return duration, frame_hash
         except Exception:
             return None, None
+
+    def _check_image_corrupted(self, image_path: str) -> Tuple[bool, str]:
+        """
+        画像ファイルが破損しているかチェック
+        Returns: (is_corrupted, error_message)
+        """
+        try:
+            # OpenCVで読み込みテスト - これが失敗すると致命的
+            img = self._load_image_cv2(image_path)
+            if img is None:
+                return True, "画像データの読み込みに失敗 (Invalid image data)"
+            
+            # PILでも読み込みテスト (JPEG SOS エラー等を検出)
+            # ただし、実際に読み込めた場合は警告のみ
+            try:
+                with Image.open(image_path) as pil_img:
+                    # verify()ではなくload()で実際に読み込む
+                    pil_img.load()
+            except Exception as e:
+                error_str = str(e)
+                # SOSエラーやtruncatedは致命的な破損
+                if "SOS" in error_str or "Invalid" in error_str:
+                    return True, f"Invalid SOS parameters for sequential JPEG"
+                elif "truncated" in error_str.lower():
+                    return True, "画像が途中で切れています (Truncated image)"
+                # その他のエラーはOpenCVで読めたなら無視
+            
+            return False, ""
+        except Exception as e:
+            return True, f"画像読み込みエラー: {str(e)[:50]}"
+    
+    def _check_video_corrupted(self, video_path: str) -> Tuple[bool, str]:
+        """
+        動画ファイルが破損しているかチェック
+        Returns: (is_corrupted, error_message)
+        """
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                return True, "動画ファイルを開けません"
+            
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            
+            if fps <= 0 or frame_count <= 0:
+                cap.release()
+                return True, "動画メタデータが不正 (FPS/フレーム数)"
+            
+            # 最初のフレームを読み込んでみる
+            ret, frame = cap.read()
+            cap.release()
+            
+            if not ret or frame is None:
+                return True, "フレームの読み込みに失敗"
+            
+            return False, ""
+        except Exception as e:
+            return True, f"動画読み込みエラー: {str(e)[:50]}"
 
     def _load_image_cv2(self, image_path: str, grayscale: bool = False) -> Optional[np.ndarray]:
         try:
