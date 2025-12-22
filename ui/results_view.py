@@ -9,12 +9,13 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTabWidget, QScrollArea,
     QPushButton, QLabel, QTableWidget, QTableWidgetItem, QCheckBox,
     QHeaderView, QMessageBox, QFrame, QStackedWidget, QSizePolicy,
-    QAbstractItemView, QSlider, QListView, QListWidget, QListWidgetItem
+    QAbstractItemView, QSlider, QListView, QListWidget, QListWidgetItem,
+    QTextEdit
 )
 from PySide6.QtCore import Qt, Signal, Slot, QThread, QSize
 from PySide6.QtGui import QPixmap, QIcon
 
-from ui_components import (
+from .components import (
     ThumbnailWidget, SyncImageWidget, ThumbnailLoader, FlowLayout, THUMBNAIL_SIZE
 )
 
@@ -42,32 +43,7 @@ class ResultsView(QWidget):
     
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        
-        # ヘッダー
-        header = QHBoxLayout()
-        back_btn = QPushButton("← スキャン画面に戻る")
-        back_btn.clicked.connect(self.back_requested.emit)
-        header.addWidget(back_btn)
-        header.addStretch()
-        layout.addLayout(header)
-
-        # サマリーバナー
-        self.summary_banner = QFrame()
-        self.summary_banner.setStyleSheet("background-color: #0078d4; border-radius: 8px; margin: 10px 0;")
-        self.summary_banner.hide()
-        banner_layout = QHBoxLayout(self.summary_banner)
-        
-        icon_label = QLabel("✨")
-        icon_label.setStyleSheet("font-size: 24px;")
-        banner_layout.addWidget(icon_label)
-        
-        self.summary_text = QLabel("スキャン完了！")
-        self.summary_text.setStyleSheet("font-weight: bold; color: white; font-size: 14px;")
-        banner_layout.addWidget(self.summary_text)
-        
-        banner_layout.addStretch()
-        layout.addWidget(self.summary_banner)
-
+        layout.setContentsMargins(0, 0, 0, 0)  # 埋め込み用にマージンなし
         
         # メインコンテンツ (タブ or 比較モード)
         self.content_stack = QStackedWidget()
@@ -81,6 +57,10 @@ class ResultsView(QWidget):
         self.tabs.addTab(self.blur_tab, "ブレ画像")
         self.tabs.addTab(self.similar_tab, "類似画像")
         self.tabs.addTab(self.video_tab, "重複動画")
+        
+        # ログタブ
+        self.log_tab = self._create_log_tab()
+        self.tabs.addTab(self.log_tab, "ログ")
         
         self.content_stack.addWidget(self.tabs)
         
@@ -105,24 +85,6 @@ class ResultsView(QWidget):
         container = QWidget()
         layout = QVBoxLayout(container)
         
-        # ソート切替コントロール
-        sort_layout = QHBoxLayout()
-        sort_layout.addWidget(QLabel("🔄 並び順:"))
-        
-        self.blur_sort_asc_btn = QPushButton("ブレ小→大 ▲")
-        self.blur_sort_asc_btn.setCheckable(True)
-        self.blur_sort_asc_btn.setChecked(True)
-        self.blur_sort_asc_btn.clicked.connect(lambda: self._set_blur_sort(ascending=True))
-        sort_layout.addWidget(self.blur_sort_asc_btn)
-        
-        self.blur_sort_desc_btn = QPushButton("ブレ大→小 ▼")
-        self.blur_sort_desc_btn.setCheckable(True)
-        self.blur_sort_desc_btn.clicked.connect(lambda: self._set_blur_sort(ascending=False))
-        sort_layout.addWidget(self.blur_sort_desc_btn)
-        
-        sort_layout.addStretch()
-        layout.addLayout(sort_layout)
-        
         # QListWidget (仮想スクロール対応)
         self.blur_list = QListWidget()
         self.blur_list.setViewMode(QListWidget.IconMode)
@@ -130,7 +92,7 @@ class ResultsView(QWidget):
         self.blur_list.setSpacing(10)
         self.blur_list.setResizeMode(QListWidget.Adjust)
         self.blur_list.setSelectionMode(QListWidget.MultiSelection)
-        self.blur_list.setUniformItemSizes(True)  # パフォーマンス向上
+        self.blur_list.setUniformItemSizes(True)
         self.blur_list.setMovement(QListWidget.Static)
         self.blur_list.setFlow(QListWidget.LeftToRight)
         self.blur_list.setWrapping(True)
@@ -188,6 +150,22 @@ class ResultsView(QWidget):
         layout.addWidget(self.video_table)
         return container
     
+    def _create_log_tab(self) -> QWidget:
+        """ログタブ"""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        
+        self.log_area = QTextEdit()
+        self.log_area.setReadOnly(True)
+        self.log_area.setPlaceholderText("スキャンログがここに表示されます...")
+        layout.addWidget(self.log_area)
+        
+        return container
+    
+    def append_log(self, message: str):
+        """ログを追加"""
+        self.log_area.append(message)
+    
     def _create_action_bar(self) -> QFrame:
         """下部アクションバー"""
         bar = QFrame()
@@ -232,10 +210,6 @@ class ResultsView(QWidget):
         self.blur_list.clear()
         self._clear_layout(self.similar_layout)
         self.video_table.setRowCount(0)
-        
-        # サマリーバナー更新
-        self._update_summary_banner(results)
-
         
         # 画像パスを収集
         all_image_paths = []
@@ -595,9 +569,6 @@ class ResultsView(QWidget):
     
     def _set_blur_sort(self, ascending: bool):
         """ブレ画像のソート順を切り替え"""
-        self.blur_sort_asc_btn.setChecked(ascending)
-        self.blur_sort_desc_btn.setChecked(not ascending)
-        
         if not hasattr(self, 'blur_items_data') or not self.blur_items_data:
             return
         
@@ -817,45 +788,6 @@ class ResultsView(QWidget):
         """クローズ時にローダーを停止"""
         self._stop_loader()
         super().closeEvent(event)
-    
-    def _update_summary_banner(self, results):
-        """スキャン結果サマリーを表示"""
-        blur_count = len(results.get("blur_images", []))
-        sim_groups = len(results.get("similar_groups", {}))
-        dup_videos = len(results.get("duplicate_videos", {}))
-        
-        # 簡易的な削減可能サイズ計算 (正確ではないが目安として)
-        # ブレ画像: 全て
-        # 類似画像: 各グループ - 1枚
-        # 動画: 各グループ - 1つ
-        
-        # メタデータを活用
-        meta = results.get("image_metadata", {})
-        total_savable = 0
-        
-        # ブレ画像のサイズ
-        for item in results.get("blur_images", []):
-            path = item[0] if isinstance(item, (list, tuple)) else item
-            total_savable += meta.get(path, {}).get("size", 0)
-            
-        # 類似画像の削減候補サイズ
-        for group in results.get("similar_groups", {}).values():
-             for i, item in enumerate(group):
-                 if i > 0: # 1枚残す前提
-                    path = item[0] if isinstance(item, (list, tuple)) else item
-                    total_savable += meta.get(path, {}).get("size", 0)
-
-        size_str = self._format_size(total_savable)
-        
-        if total_savable > 0:
-            self.summary_text.setText(
-                f"スキャン完了！ 不要なファイルを削除して、最大 {size_str} の空き容量を確保できます。\n"
-                f"• ブレ画像: {blur_count}枚  • 類似グループ: {sim_groups}  • 重複動画: {dup_videos}"
-            )
-            self.summary_banner.show()
-        else:
-            self.summary_text.setText("問題は見つかりませんでした！ ライブラリはきれいです。")
-            self.summary_banner.show()
 
     def _on_threshold_changed(self, value: int):
         """類似度閾値スライダー変更時"""

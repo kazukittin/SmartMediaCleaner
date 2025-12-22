@@ -1,8 +1,10 @@
+"""
+db_manager.py - SmartMediaCleaner
+SQLiteデータベースを管理するクラス
+"""
 import sqlite3
-from typing import Optional, Tuple, Dict
-from pathlib import Path
-import time
-import os
+from typing import Optional, Dict
+
 
 class DBManager:
     """
@@ -25,16 +27,6 @@ class DBManager:
             self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
             self.cursor = self.conn.cursor()
             
-            # テーブル作成
-            # file_path: ファイルの絶対パス (Primary Key)
-            # last_modified: ファイルの最終更新日時
-            # file_size: ファイルサイズ
-            # blur_score: 画像のブレスコア
-            # phash: 画像の知覚ハッシュ (Perceptual Hash)
-            # video_hash: 動画の重複判定用ハッシュ (Phase 1)
-            # face_count: 顔の検出数 (Phase 3)
-            # video_duration: 動画の長さ(秒) (Phase 3)
-            # video_frame_hash: 中間フレームのpHash (Phase 3)
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS media_cache (
                     file_path TEXT PRIMARY KEY,
@@ -50,7 +42,6 @@ class DBManager:
             ''')
             self.conn.commit()
             
-            # 既存DBのマイグレーション
             self._migrate_schema()
             
         except sqlite3.Error as e:
@@ -59,11 +50,9 @@ class DBManager:
     def _migrate_schema(self):
         """既存テーブルに新しいカラムを追加 (マイグレーション)"""
         try:
-            # 既存カラムを確認
             self.cursor.execute("PRAGMA table_info(media_cache)")
             columns = {row[1] for row in self.cursor.fetchall()}
             
-            # Phase 3 カラムの追加
             new_columns = [
                 ("face_count", "INTEGER"),
                 ("video_duration", "REAL"),
@@ -80,15 +69,7 @@ class DBManager:
             print(f"マイグレーションエラー: {e}")
 
     def get_cache(self, file_path: str) -> Optional[Dict]:
-        """
-        指定されたパスのキャッシュ情報を取得します。
-        
-        Args:
-            file_path: ファイルの絶対パス
-            
-        Returns:
-            Dict: キャッシュデータ (存在しない場合はNone)
-        """
+        """キャッシュ情報を取得"""
         try:
             query = """SELECT last_modified, file_size, blur_score, phash, video_hash,
                        face_count, video_duration, video_frame_hash 
@@ -116,9 +97,7 @@ class DBManager:
                      blur_score: Optional[float] = None, phash: Optional[str] = None, 
                      video_hash: Optional[str] = None, face_count: Optional[int] = None,
                      video_duration: Optional[float] = None, video_frame_hash: Optional[str] = None):
-        """
-        キャッシュ情報を挿入または更新します。
-        """
+        """キャッシュ情報を挿入または更新"""
         try:
             query = '''
                 INSERT OR REPLACE INTO media_cache 
@@ -133,14 +112,10 @@ class DBManager:
             print(f"キャッシュ保存エラー: {e}")
 
     def is_cache_valid(self, file_path: str, current_mtime: float, current_size: int) -> bool:
-        """
-        キャッシュが有効（ファイルの変更がない）かどうかを確認します。
-        """
+        """キャッシュが有効かどうかを確認"""
         cache = self.get_cache(file_path)
         if not cache:
             return False
-            
-        # 許容誤差を考慮して比較 (浮動小数点数の微細な差異対策)
         return (abs(cache['last_modified'] - current_mtime) < 0.001 and 
                 cache['file_size'] == current_size)
 
@@ -148,11 +123,3 @@ class DBManager:
         """データベース接続を閉じます。"""
         if self.conn:
             self.conn.close()
-
-if __name__ == "__main__":
-    # 簡易テスト code
-    db = DBManager()
-    test_path = "C:\\test\\image.jpg"
-    db.upsert_cache(test_path, 123456789.0, 1024, 150.5, "abcd1234abcd1234", None, 2, None, None)
-    print(f"Cached: {db.get_cache(test_path)}")
-    db.close()
