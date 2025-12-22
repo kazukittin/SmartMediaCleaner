@@ -18,7 +18,6 @@ from ui_components import (
     ThumbnailWidget, SyncImageWidget, ThumbnailLoader, FlowLayout, THUMBNAIL_SIZE
 )
 
-
 class ResultsView(QWidget):
     """
     スキャン結果を表示するメイン画面
@@ -51,6 +50,24 @@ class ResultsView(QWidget):
         header.addWidget(back_btn)
         header.addStretch()
         layout.addLayout(header)
+
+        # サマリーバナー
+        self.summary_banner = QFrame()
+        self.summary_banner.setStyleSheet("background-color: #0078d4; border-radius: 8px; margin: 10px 0;")
+        self.summary_banner.hide()
+        banner_layout = QHBoxLayout(self.summary_banner)
+        
+        icon_label = QLabel("✨")
+        icon_label.setStyleSheet("font-size: 24px;")
+        banner_layout.addWidget(icon_label)
+        
+        self.summary_text = QLabel("スキャン完了！")
+        self.summary_text.setStyleSheet("font-weight: bold; color: white; font-size: 14px;")
+        banner_layout.addWidget(self.summary_text)
+        
+        banner_layout.addStretch()
+        layout.addWidget(self.summary_banner)
+
         
         # メインコンテンツ (タブ or 比較モード)
         self.content_stack = QStackedWidget()
@@ -215,6 +232,10 @@ class ResultsView(QWidget):
         self.blur_list.clear()
         self._clear_layout(self.similar_layout)
         self.video_table.setRowCount(0)
+        
+        # サマリーバナー更新
+        self._update_summary_banner(results)
+
         
         # 画像パスを収集
         all_image_paths = []
@@ -797,6 +818,45 @@ class ResultsView(QWidget):
         self._stop_loader()
         super().closeEvent(event)
     
+    def _update_summary_banner(self, results):
+        """スキャン結果サマリーを表示"""
+        blur_count = len(results.get("blur_images", []))
+        sim_groups = len(results.get("similar_groups", {}))
+        dup_videos = len(results.get("duplicate_videos", {}))
+        
+        # 簡易的な削減可能サイズ計算 (正確ではないが目安として)
+        # ブレ画像: 全て
+        # 類似画像: 各グループ - 1枚
+        # 動画: 各グループ - 1つ
+        
+        # メタデータを活用
+        meta = results.get("image_metadata", {})
+        total_savable = 0
+        
+        # ブレ画像のサイズ
+        for item in results.get("blur_images", []):
+            path = item[0] if isinstance(item, (list, tuple)) else item
+            total_savable += meta.get(path, {}).get("size", 0)
+            
+        # 類似画像の削減候補サイズ
+        for group in results.get("similar_groups", {}).values():
+             for i, item in enumerate(group):
+                 if i > 0: # 1枚残す前提
+                    path = item[0] if isinstance(item, (list, tuple)) else item
+                    total_savable += meta.get(path, {}).get("size", 0)
+
+        size_str = self._format_size(total_savable)
+        
+        if total_savable > 0:
+            self.summary_text.setText(
+                f"スキャン完了！ 不要なファイルを削除して、最大 {size_str} の空き容量を確保できます。\n"
+                f"• ブレ画像: {blur_count}枚  • 類似グループ: {sim_groups}  • 重複動画: {dup_videos}"
+            )
+            self.summary_banner.show()
+        else:
+            self.summary_text.setText("問題は見つかりませんでした！ ライブラリはきれいです。")
+            self.summary_banner.show()
+
     def _on_threshold_changed(self, value: int):
         """類似度閾値スライダー変更時"""
         if value == 0:

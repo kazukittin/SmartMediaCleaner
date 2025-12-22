@@ -7,11 +7,58 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, 
     QHBoxLayout, QPushButton, QLabel, QFileDialog, 
     QProgressBar, QTextEdit, QDoubleSpinBox, QGroupBox,
-    QStackedWidget, QCheckBox
+    QStackedWidget, QCheckBox, QDialog, QDialogButtonBox
 )
 from PySide6.QtCore import QThread, Slot, Qt
 from scanner import ScanWorker
 from results_view import ResultsView
+
+
+
+class SettingsDialog(QDialog):
+    """スキャン設定ダイアログ"""
+    def __init__(self, settings, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("スキャン設定")
+        self.settings = settings.copy()  # キャンセル時に影響しないようにコピー
+        
+        layout = QVBoxLayout(self)
+        
+        # 設定項目
+        form_group = QGroupBox("基本設定")
+        form_layout = QVBoxLayout()
+        
+        # ブレ判定
+        blur_layout = QHBoxLayout()
+        blur_layout.addWidget(QLabel("ブレ判定閾値:"))
+        self.blur_spin = QDoubleSpinBox()
+        self.blur_spin.setRange(0, 5000)
+        self.blur_spin.setValue(self.settings.get("blur_threshold", 100.0))
+        self.blur_spin.setToolTip("この値より低いスコアの画像をブレと判定")
+        blur_layout.addWidget(self.blur_spin)
+        form_layout.addLayout(blur_layout)
+        
+        # サブフォルダ
+        self.subfolder_check = QCheckBox("サブフォルダを含める")
+        self.subfolder_check.setChecked(self.settings.get("recursive", True))
+        self.subfolder_check.setToolTip("サブフォルダ内のファイルも再帰的にスキャン")
+        form_layout.addWidget(self.subfolder_check)
+        
+        form_group.setLayout(form_layout)
+        layout.addWidget(form_group)
+        
+        # OK/Cancelボタン
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_settings(self):
+        """設定値を取得"""
+        return {
+            "blur_threshold": self.blur_spin.value(),
+            "recursive": self.subfolder_check.isChecked()
+        }
 
 
 class ScanPage(QWidget):
@@ -35,33 +82,52 @@ class ScanPage(QWidget):
         folder_layout.addWidget(self.path_label, 1)
         self.layout.addLayout(folder_layout)
 
-        # 2. 設定エリア
-        settings_group = QGroupBox("スキャン設定")
+        # 2. 設定エリア (ボタンのみ)
+        # 設定値の初期化
+        self.settings = {
+            "blur_threshold": 100.0,
+            "recursive": True
+        }
+        
         settings_layout = QHBoxLayout()
         
-        settings_layout.addWidget(QLabel("ブレ判定閾値:"))
-        self.blur_threshold_spin = QDoubleSpinBox()
-        self.blur_threshold_spin.setRange(0, 5000)
-        self.blur_threshold_spin.setValue(100.0)
-        self.blur_threshold_spin.setToolTip("この値より低いスコアの画像をブレと判定")
-        settings_layout.addWidget(self.blur_threshold_spin)
-        
-        settings_layout.addSpacing(30)
-        
-        # Phase 5: サブフォルダトグル
-        self.subfolder_checkbox = QCheckBox("サブフォルダを含める")
-        self.subfolder_checkbox.setChecked(True)
-        self.subfolder_checkbox.setToolTip("サブフォルダ内のファイルも再帰的にスキャン")
-        settings_layout.addWidget(self.subfolder_checkbox)
+        self.settings_btn = QPushButton("⚙ 設定")
+        self.settings_btn.setFixedSize(100, 36)
+        self.settings_btn.clicked.connect(self.open_settings_dialog)
+        settings_layout.addWidget(self.settings_btn)
         
         settings_layout.addStretch()
-        settings_group.setLayout(settings_layout)
-        self.layout.addWidget(settings_group)
+        self.layout.addLayout(settings_layout)
+
+        # 2.5 ガイド表示 (フォルダ未選択時)
+        self.guide_widget = QWidget()
+        guide_layout = QVBoxLayout(self.guide_widget)
+        
+        guide_title = QLabel("ステップ 1: スキャンするフォルダを選んでください")
+        guide_title.setAlignment(Qt.AlignCenter)
+        guide_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #0078d4; margin-bottom: 20px;")
+        
+        guide_desc = QLabel(
+            "写真や動画が保存されているフォルダを選択すると、\n"
+            "自動的にスキャンして不要なファイルを見つけ出します。\n\n"
+            "• 📸 ピンボケ写真\n"
+            "• 🖼 似ている写真 (連写など)\n"
+            "• 🎥 全く同じ動画"
+        )
+        guide_desc.setAlignment(Qt.AlignCenter)
+        guide_desc.setStyleSheet("font-size: 14px; line-height: 1.6; color: #cccccc;")
+        
+        guide_layout.addWidget(guide_title)
+        guide_layout.addWidget(guide_desc)
+        guide_layout.addStretch()
+        
+        self.layout.addWidget(self.guide_widget)
 
         # 3. 実行エリア
-        self.run_btn = QPushButton("スキャン開始")
+        self.run_btn = QPushButton("🚀 スキャン開始")
         self.run_btn.setEnabled(False)
-        self.run_btn.setStyleSheet("padding: 10px; font-size: 14px;")
+        self.run_btn.hide()  # 最初は隠す
+        self.run_btn.setStyleSheet("padding: 12px; font-size: 16px; font-weight: bold;")
         self.layout.addWidget(self.run_btn)
 
         self.progress_bar = QProgressBar()
@@ -91,6 +157,17 @@ class ScanPage(QWidget):
             self.path_label.setText(folder)
             self.run_btn.setEnabled(True)
             self.status_label.setText("準備完了")
+            self.guide_widget.hide()  # ガイドを非表示
+            self.run_btn.show()       # 実行ボタンを表示
+
+
+    @Slot()
+    def open_settings_dialog(self):
+        """設定ダイアログを開く"""
+        dialog = SettingsDialog(self.settings, self)
+        if dialog.exec() == QDialog.Accepted:
+            self.settings = dialog.get_settings()
+            self.status_label.setText("設定を更新しました")
 
     def start_scan(self, on_finished_callback):
         """スキャンを開始"""
@@ -106,8 +183,8 @@ class ScanPage(QWidget):
         self.thread = QThread()
         self.worker = ScanWorker(
             self.target_folder, 
-            self.blur_threshold_spin.value(),
-            recursive=self.subfolder_checkbox.isChecked()
+            self.settings["blur_threshold"],
+            recursive=self.settings["recursive"]
         )
         self.worker.moveToThread(self.thread)
 
@@ -133,12 +210,28 @@ class ScanPage(QWidget):
     def on_log(self, message):
         self.log_area.append(f"[LOG] {message}")
 
+    @Slot()
     def reset_ui(self):
         """UIをリセット (スキャン完了後)"""
         self.status_label.setText("スキャン完了")
         self.progress_bar.setValue(self.progress_bar.maximum())
         self.run_btn.setEnabled(True)
         self.select_btn.setEnabled(True)
+
+    def cleanup(self):
+        """スレッドの終了処理"""
+        try:
+            if self.worker:
+                self.worker.stop()
+            if self.thread and self.thread.isRunning():
+                self.thread.quit()
+                self.thread.wait(2000)
+                if self.thread.isRunning():
+                    self.thread.terminate()
+        except RuntimeError:
+            # C++オブジェクトが既に削除されている場合は無視
+            pass
+
 
 
 class MainWindow(QMainWindow):
@@ -199,6 +292,12 @@ class MainWindow(QMainWindow):
     def show_scan_page(self):
         """スキャン画面に戻る"""
         self.stack.setCurrentWidget(self.scan_page)
+
+    def closeEvent(self, event):
+        """アプリ終了時のクリーンアップ"""
+        self.scan_page.cleanup()
+        event.accept()
+
 
 
 def main():
