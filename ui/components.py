@@ -21,6 +21,7 @@ class ThumbnailLoader(QObject):
     サムネイル画像を非同期で読み込むワーカー
     """
     loaded = Signal(str, QPixmap)  # file_path, pixmap
+    failed = Signal(str)  # file_path (読み込み失敗)
     finished = Signal()  # 完了シグナル
 
     def __init__(self, file_paths: list):
@@ -46,8 +47,11 @@ class ThumbnailLoader(QObject):
                         Qt.SmoothTransformation
                     )
                     self.loaded.emit(path, scaled)
+                else:
+                    # 読み込み失敗
+                    self.failed.emit(path)
             except Exception:
-                pass  # 読み込み失敗は無視
+                self.failed.emit(path)
         
         # 完了シグナルを発行
         self.finished.emit()
@@ -123,6 +127,16 @@ class ThumbnailWidget(QFrame):
         """サムネイル画像をセット"""
         self.image_label.setPixmap(pixmap)
         self.image_label.setText("")
+    
+    def set_error(self):
+        """読み込みエラー時のプレースホルダー"""
+        self.image_label.setText("⚠️ 読込失敗")
+        self.image_label.setStyleSheet("""
+            background-color: #3a2a2a;
+            border-radius: 4px;
+            color: #ff6666;
+            font-size: 12px;
+        """)
     
     def is_checked(self) -> bool:
         return self.checkbox.isChecked()

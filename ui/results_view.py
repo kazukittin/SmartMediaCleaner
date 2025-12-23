@@ -140,18 +140,19 @@ class ResultsView(QWidget):
         return container
     
     def _create_video_tab(self) -> QWidget:
-        """重複動画タブ (テーブル表示)"""
+        """重複動画タブ (グループ表示)"""
         container = QWidget()
         layout = QVBoxLayout(container)
         
-        self.video_table = QTableWidget()
-        self.video_table.setColumnCount(4)
-        self.video_table.setHorizontalHeaderLabels(["選択", "ファイル名", "サイズ", "パス"])
-        self.video_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        self.video_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.video_table.setAlternatingRowColors(True)
+        # スクロールエリア
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
         
-        layout.addWidget(self.video_table)
+        self.video_content = QWidget()
+        self.video_layout = QVBoxLayout(self.video_content)
+        scroll.setWidget(self.video_content)
+        
+        layout.addWidget(scroll)
         return container
     
     def _create_corrupted_tab(self) -> QWidget:
@@ -167,8 +168,26 @@ class ResultsView(QWidget):
         self.corrupted_table = QTableWidget()
         self.corrupted_table.setColumnCount(4)
         self.corrupted_table.setHorizontalHeaderLabels(["選択", "ファイル名", "エラー内容", "パス"])
-        self.corrupted_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        
+        # カラム幅の設定（より広めに設定）
+        header = self.corrupted_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.Interactive)
+        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        
+        self.corrupted_table.setColumnWidth(0, 60)   # 選択
+        self.corrupted_table.setColumnWidth(1, 180)  # ファイル名
+        self.corrupted_table.setColumnWidth(2, 300)  # エラー内容
+        
+        # 行の高さを統一
+        self.corrupted_table.verticalHeader().setDefaultSectionSize(32)
+        self.corrupted_table.verticalHeader().setVisible(False)
+        
         self.corrupted_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.corrupted_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.corrupted_table.setEditTriggers(QAbstractItemView.NoEditTriggers)  # 編集不可
+        self.corrupted_table.setFocusPolicy(Qt.NoFocus)  # フォーカス枠を削除
         self.corrupted_table.setAlternatingRowColors(True)
         
         layout.addWidget(self.corrupted_table)
@@ -233,7 +252,7 @@ class ResultsView(QWidget):
         # 各タブをクリア
         self.blur_list.clear()
         self._clear_layout(self.similar_layout)
-        self.video_table.setRowCount(0)
+        self._clear_layout(self.video_layout)
         self.corrupted_table.setRowCount(0)
         
         # 画像パスを収集
@@ -292,53 +311,18 @@ class ResultsView(QWidget):
             self.similar_layout.addWidget(group_widget)
             # パスを抽出
             for item in group_items:
-                if isinstance(item, tuple):
+                if isinstance(item, (tuple, list)):
                     all_image_paths.append(item[0])
-                else:
+                elif isinstance(item, str):
                     all_image_paths.append(item)
         self.similar_layout.addStretch()
         
-        # 重複動画タブ (Phase 3形式: key -> [(path, duration), ...])
+        # 重複動画タブ (グループ表示)
         dup_videos = results.get("duplicate_videos", {})
-        row = 0
         for group_hash, group_items in dup_videos.items():
-            for item in group_items:
-                # Phase 3形式かPhase 1形式か判定
-                if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    path, duration = item[0], item[1]
-                elif isinstance(item, (list, tuple)) and len(item) == 1:
-                    path = item[0]
-                    duration = None
-                elif isinstance(item, str):
-                    path = item
-                    duration = None
-                else:
-                    continue
-                
-                self.video_table.insertRow(row)
-                
-                # チェックボックス
-                checkbox = QCheckBox()
-                checkbox.stateChanged.connect(
-                    lambda state, p=path, cb=checkbox: self._on_video_check_changed(p, cb.isChecked())
-                )
-                self.video_table.setCellWidget(row, 0, checkbox)
-                
-                # ファイル情報
-                filename = os.path.basename(path)
-                size = os.path.getsize(path) if os.path.exists(path) else 0
-                size_str = self._format_size(size)
-                
-                # 長さ情報 (Phase 3)
-                if duration is not None:
-                    duration_str = f"{duration:.1f}秒"
-                    filename = f"{filename} ({duration_str})"
-                
-                self.video_table.setItem(row, 1, QTableWidgetItem(filename))
-                self.video_table.setItem(row, 2, QTableWidgetItem(size_str))
-                self.video_table.setItem(row, 3, QTableWidgetItem(path))
-                
-                row += 1
+            group_widget = self._create_video_group_widget(group_hash, group_items)
+            self.video_layout.addWidget(group_widget)
+        self.video_layout.addStretch()
         
         # 破損メディアタブ
         corrupted_files = results.get("corrupted_files", [])
@@ -444,6 +428,109 @@ class ResultsView(QWidget):
         
         return group
     
+    def _create_video_group_widget(self, group_hash: str, group_items: list) -> QWidget:
+        """
+        重複動画グループを表示するウィジェット
+        """
+        group = QFrame()
+        group.setFrameStyle(QFrame.Box)
+        group.setStyleSheet("border: 1px solid #444; padding: 5px; margin: 5px;")
+        
+        layout = QVBoxLayout(group)
+        
+        # データ形式を正規化
+        normalized_items = []
+        for item in group_items:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                path, duration = item[0], item[1]
+            elif isinstance(item, (list, tuple)) and len(item) == 1:
+                path = item[0]
+                duration = None
+            elif isinstance(item, str):
+                path = item
+                duration = None
+            else:
+                continue
+            
+            size = os.path.getsize(path) if os.path.exists(path) else 0
+            normalized_items.append((path, duration, size))
+        
+        # グループヘッダー
+        header = QLabel(f"🎬 グループ: {group_hash[:16]}... ({len(normalized_items)}本)")
+        header.setStyleSheet("font-weight: bold; border: none;")
+        layout.addWidget(header)
+        
+        # 動画カード横並び (スクロール可能)
+        scroll = QScrollArea()
+        scroll.setFixedHeight(120)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidgetResizable(True)
+        
+        card_container = QWidget()
+        card_layout = QHBoxLayout(card_container)
+        card_layout.setSpacing(10)
+        
+        # ベストを選択（サイズが最大のもの）
+        best_path = max(normalized_items, key=lambda x: x[2])[0] if normalized_items else ""
+        
+        for path, duration, size in normalized_items:
+            card = self._create_video_card(path, duration, size, is_best=(path == best_path))
+            card_layout.addWidget(card)
+            
+            # ベスト以外は削除候補にチェック
+            if path != best_path:
+                self.selected_files.add(path)
+        
+        card_layout.addStretch()
+        scroll.setWidget(card_container)
+        layout.addWidget(scroll)
+        
+        return group
+    
+    def _create_video_card(self, path: str, duration: float, size: int, is_best: bool = False) -> QFrame:
+        """動画カードを作成"""
+        card = QFrame()
+        card.setFrameStyle(QFrame.Box | QFrame.Plain)
+        card.setFixedSize(250, 90)
+        if is_best:
+            card.setStyleSheet("background-color: #1a3a1a; border: 2px solid #4a9eff;")
+        else:
+            card.setStyleSheet("background-color: #2a2a2a; border: 1px solid #444;")
+        
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(8, 5, 8, 5)
+        layout.setSpacing(3)
+        
+        # ファイル名
+        filename = os.path.basename(path)
+        if len(filename) > 25:
+            filename = filename[:22] + "..."
+        name_label = QLabel(f"🎥 {filename}")
+        name_label.setToolTip(path)
+        name_label.setStyleSheet("border: none; font-weight: bold;")
+        layout.addWidget(name_label)
+        
+        # 情報行
+        info_parts = []
+        if duration is not None:
+            info_parts.append(f"⏱ {duration:.1f}秒")
+        info_parts.append(f"📁 {self._format_size(size)}")
+        info_label = QLabel(" | ".join(info_parts))
+        info_label.setStyleSheet("border: none; color: #aaa; font-size: 11px;")
+        layout.addWidget(info_label)
+        
+        # チェックボックス
+        checkbox = QCheckBox("削除対象" if not is_best else "✓ ベスト (保持)")
+        checkbox.setStyleSheet("border: none;")
+        checkbox.setChecked(not is_best)
+        checkbox.stateChanged.connect(
+            lambda state, p=path, cb=checkbox: self._on_video_check_changed(p, cb.isChecked())
+        )
+        layout.addWidget(checkbox)
+        
+        return card
+    
     def _select_best_shot(self, items: list) -> str:
         """
         類似画像グループから「残すべき1枚」を選択する
@@ -483,11 +570,14 @@ class ResultsView(QWidget):
         self.pending_thumbnail_paths = list(paths)
         self.loaded_thumbnails = set()
         
-        # 最初のバッチを読み込み (可視範囲 + 余裕)
-        initial_batch = paths[:50] if len(paths) > 50 else paths
-        self._load_thumbnail_batch(initial_batch)
+        # 全画像を読み込み (類似画像も含めて)
+        self._load_thumbnail_batch(paths)
         
-        # スクロールイベントで追加読み込み
+        # スクロールイベントで追加読み込み（blur_list用）
+        try:
+            self.blur_list.verticalScrollBar().valueChanged.disconnect(self._on_blur_scroll)
+        except:
+            pass
         self.blur_list.verticalScrollBar().valueChanged.connect(self._on_blur_scroll)
     
     def _on_blur_scroll(self):
@@ -534,6 +624,7 @@ class ResultsView(QWidget):
         # シグナル接続
         self.loader_thread.started.connect(self.loader.run)
         self.loader.loaded.connect(self._on_thumbnail_loaded)
+        self.loader.failed.connect(self._on_thumbnail_failed)
         
         # スレッド終了処理
         self.loader.finished.connect(self.loader_thread.quit)
@@ -571,6 +662,13 @@ class ResultsView(QWidget):
                 # アイコンとして設定
                 item.setIcon(QIcon(pixmap))
                 break
+    
+    @Slot(str)
+    def _on_thumbnail_failed(self, path: str):
+        """サムネイル読み込み失敗時"""
+        # ThumbnailWidget (類似画像タブ用)
+        if path in self.thumbnail_widgets:
+            self.thumbnail_widgets[path].set_error()
     
     def _on_check_changed(self, path: str, checked: bool):
         """チェックボックス変更時"""
